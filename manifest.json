@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Meet AI Summarizer",
+  "version": "0.2",
+  "description": "Google Meetの字幕を収集してAIで要約します",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["meet.js"]
+    }
+  ]
+}
