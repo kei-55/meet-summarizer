@@ -4,31 +4,56 @@
   <meta charset="UTF-8" />
   <title>Meet Summarizer 設定</title>
 </head>
-<body style="max-width:720px; margin:20px auto; font-family:sans-serif;">
+<body style="font-family:sans-serif;max-width:900px;margin:20px">
   <h2>⚙ Meet Summarizer 設定</h2>
 
   <h3>Gemini APIキー</h3>
-  <p style="opacity:0.8; font-size:13px;">
-    画面共有で見えないように、ポップアップには表示しません。ここでのみ設定します。
-  </p>
-
-  <div style="display:flex; gap:8px; align-items:center;">
-    <input id="apiKey" type="password" placeholder="Gemini API Key" style="flex:1; padding:8px;" />
-    <button id="toggle">表示</button>
-    <button id="save">保存</button>
+  <div style="font-size:12px;opacity:.8">
+    画面共有で見えないよう、ポップアップには表示しません。ここで設定します。
   </div>
 
-  <div id="status" style="margin-top:10px; font-size:13px;"></div>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <input id="key" type="password" placeholder="Gemini API Key" style="flex:1;padding:6px" />
+    <button id="toggle">表示</button>
+    <button id="saveKey">保存</button>
+  </div>
 
-  <hr style="margin:20px 0;" />
+  <hr style="margin:20px 0"/>
 
-  <h3>Googleドキュメント保存</h3>
-  <p style="opacity:0.8; font-size:13px;">
-    会議終了時に「要約 + 全文ログ」をGoogleドキュメントとしてDriveに作成します。初回はGoogleログイン許可が出ます。
-  </p>
+  <h3>保存先（会話ログ / 要約）</h3>
+  <div style="font-size:12px;opacity:.8;margin-bottom:8px">
+    Chrome拡張はセキュリティ上、任意フォルダへ自動保存できません。<br>
+    「Downloads配下のサブフォルダ」か「毎回保存先を選ぶ」方式になります。
+  </div>
 
-  <button id="testAuth">Google認可テスト</button>
-  <div id="authStatus" style="margin-top:10px; font-size:13px;"></div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <label style="min-width:180px;">Downloads配下フォルダ名</label>
+    <input id="saveFolder" placeholder="例：MeetSummarizer" style="flex:1;padding:6px" />
+    <button id="saveFolderBtn">保存</button>
+  </div>
+
+  <div style="margin-top:10px;">
+    <label>
+      <input type="checkbox" id="saveAs" />
+      毎回「名前を付けて保存」を出す（任意の保存先を選べる）
+    </label>
+    <button id="saveAsBtn" style="margin-left:8px;">保存</button>
+  </div>
+
+  <div id="saveStatus" style="margin-top:10px;font-size:12px;"></div>
+
+  <hr style="margin:20px 0"/>
+
+  <h3>履歴（最新50件）</h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button id="refresh">更新</button>
+    <button id="clearAll">全消去</button>
+    <input id="search" placeholder="検索（meetingKey / 日付）" style="flex:1;min-width:220px;padding:6px" />
+    <button id="clearSearch">クリア</button>
+  </div>
+  <div id="historyStatus" style="margin-top:8px;font-size:12px;opacity:.8"></div>
+
+  <div id="list" style="margin-top:12px"></div>
 
   <script src="options.js"></script>
 </body>

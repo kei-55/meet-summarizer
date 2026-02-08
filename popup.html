@@ -2,31 +2,23 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>会議終了後 要約</title>
+  <title>Meet Summarizer</title>
 </head>
-<body style="width:360px;font-family:sans-serif">
+<body style="width:340px;font-family:sans-serif">
   <h3>📝 会議終了後 要約</h3>
 
-  <div style="display:flex; gap:6px; margin-bottom:8px;">
-    <button id="openSettings">設定を開く</button>
-    <button id="clear">全消去</button>
-  </div>
-
-  <div style="font-size:12px; opacity:0.8; margin-bottom:6px;">
-    会議中は要約しません。退出/タブ閉じ/会議ID変化で自動要約→Googleドキュメントに保存します。
-  </div>
-
-  <div style="margin-bottom:6px;">
-    <button id="refresh">最新要約</button>
-    <button id="copy">コピー</button>
-  </div>
-
-  <pre id="result" style="white-space:pre-wrap; margin-top:8px; max-height:260px; overflow:auto;"></pre>
+  <button id="openOptions">⚙ 設定を開く</button>
 
   <hr />
 
-  <h4 style="margin:6px 0;">📚 履歴</h4>
-  <div id="history" style="max-height:220px; overflow:auto; border:1px solid #ddd; padding:6px;"></div>
+  <div style="font-size:12px;opacity:.8">
+    会議終了後の最新要約をここに表示します。<br>
+    会議中に終了検知が失敗した場合は「今すぐ要約」を押してください。
+  </div>
+
+  <button id="summarizeNow" style="margin-top:8px">今すぐ要約（手動）</button>
+
+  <pre id="result" style="white-space:pre-wrap;margin-top:10px"></pre>
 
   <script src="popup.js"></script>
 </body>

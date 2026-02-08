@@ -1,283 +1,350 @@
-// background.js (MV3) - summarize on end + save to Google Docs + history
+// background.js (MV3 service worker)
+// - Meetの発言ログを会議ごとに蓄積
+// - 会議終了(or手動)でGemini要約
+// - 要約と全文ログをローカル（Downloads配下）へテキスト保存
+// - 保存先：Downloads配下のサブフォルダ名を設定可能 + saveAs(毎回保存先ダイアログ)
 
-let logsByMeeting = {};
-chrome.storage.local.get(["logsByMeeting"], (res) => {
-  logsByMeeting = res.logsByMeeting || {};
-  console.log("📂 logsByMeeting restored:", Object.keys(logsByMeeting).length);
-});
+let logsByMeeting = {}; // { meetingKey: [ {ts, text} ] }
+let summaries = [];     // history list [{id, meetingKey, createdAt, summary, fullTextCount, files}]
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const meetingKey = msg.meetingKey || "unknown";
+const MAX_LOGS_PER_MEETING = 3000; // メモリ暴走防止
+const MAX_HISTORY = 50;            // 履歴保存上限
 
-  if (msg.type === "LOG") {
-    const arr = (logsByMeeting[meetingKey] ||= []);
-    const last = arr.at(-1);
-    if (last !== msg.text) {
-      arr.push(msg.text);
-      const MAX_LOGS = 300;
-      if (arr.length > MAX_LOGS) logsByMeeting[meetingKey] = arr.slice(-MAX_LOGS);
-      chrome.storage.local.set({ logsByMeeting });
-      console.log("🗣 LOG saved:", meetingKey, msg.text);
-    }
-    return;
-  }
+console.log("background.js loaded");
 
-  if (msg.type === "CLEAR") {
-    logsByMeeting = {};
-    chrome.storage.local.remove(["logsByMeeting", "lastSummary", "summaries"], () => {
-      console.log("🧹 cleared");
-    });
-    return;
-  }
+(async function boot() {
+  const stored = await chrome.storage.local.get(["logsByMeeting", "summaries"]);
+  logsByMeeting = stored.logsByMeeting || {};
+  summaries = stored.summaries || [];
+  console.log("📂 logs restored:", Object.keys(logsByMeeting).length);
+  console.log("📚 summaries restored:", summaries.length);
+})();
 
-  if (msg.type === "GET_LAST_SUMMARY") {
-    chrome.storage.local.get(["lastSummary"], (res) => {
-      sendResponse({ lastSummary: res.lastSummary || null });
-    });
-    return true;
-  }
-
-  if (msg.type === "GET_SUMMARY_LIST") {
-    chrome.storage.local.get(["summaries"], (res) => {
-      sendResponse({ summaries: res.summaries || [] });
-    });
-    return true;
-  }
-
-  if (msg.type === "AUTH_TEST") {
-    getAuthToken(true).then((token) => {
-      if (!token) sendResponse({ ok: false, error: "❌ 認可に失敗しました（OAuth設定を確認）" });
-      else sendResponse({ ok: true });
-    });
-    return true;
-  }
-
-  if (msg.type === "END_MEETING") {
-    summarizeAndSave(meetingKey, msg.reason || "unknown").then((out) => sendResponse(out));
-    return true;
-  }
-});
-
-async function pushSummaryToHistory(summaryObj) {
-  const { summaries = [] } = await chrome.storage.local.get(["summaries"]);
-  const next = [summaryObj, ...summaries];
-  const MAX = 20;
-  if (next.length > MAX) next.length = MAX;
-  await chrome.storage.local.set({ summaries: next });
+// ---- storage save (debounce) ----
+let saveTimer = null;
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    await chrome.storage.local.set({ logsByMeeting, summaries });
+  }, 1000);
 }
 
-async function listModels() {
-  const { geminiApiKey } = await chrome.storage.local.get(["geminiApiKey"]);
-  if (!geminiApiKey) return { ok: false, error: "❌ Gemini APIキーが設定されていません" };
+// ---- util ----
+function nowIso() {
+  return new Date().toISOString();
+}
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+function fileStamp() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const mo = pad2(d.getMonth() + 1);
+  const da = pad2(d.getDate());
+  const h = pad2(d.getHours());
+  const mi = pad2(d.getMinutes());
+  const s = pad2(d.getSeconds());
+  return `${y}${mo}${da}-${h}${mi}${s}`;
+}
+function safeName(str) {
+  return (str || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+}
 
-  const endpoints = [
-    { api: "v1", url: `https://generativelanguage.googleapis.com/v1/models?key=${geminiApiKey}` },
-    { api: "v1beta", url: `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}` }
+// ---- settings ----
+async function getApiKey() {
+  const { geminiApiKey } = await chrome.storage.local.get(["geminiApiKey"]);
+  return geminiApiKey || "";
+}
+async function getSaveSettings() {
+  const { saveFolder, saveAs } = await chrome.storage.local.get(["saveFolder", "saveAs"]);
+  return {
+    saveFolder: (saveFolder || "MeetSummarizer").trim(),
+    saveAs: !!saveAs
+  };
+}
+function normalizeSubdir(name) {
+  // Windows互換寄せ：危険文字除去
+  return (name || "")
+    .replace(/[\\:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+}
+
+// ---- Gemini ----
+async function listModels(apiKey) {
+  // v1 の ListModels
+  const url = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  console.log("📚 ListModels response:", data);
+  if (!Array.isArray(data.models)) return [];
+  return data.models.map(m => m.name).filter(Boolean);
+}
+
+function pickModel(modelNames) {
+  const prefer = [
+    "models/gemini-2.5-flash",
+    "models/gemini-2.0-flash",
+    "models/gemini-1.5-flash",
+    "models/gemini-1.5-pro"
   ];
+  for (const p of prefer) {
+    if (modelNames.includes(p)) return p;
+  }
+  const flash = modelNames.find(n => n.includes("flash") && n.startsWith("models/"));
+  if (flash) return flash;
+  return modelNames.find(n => n.startsWith("models/")) || "models/gemini-1.5-flash";
+}
 
-  for (const ep of endpoints) {
-    try {
-      const res = await fetch(ep.url);
-      const data = await res.json();
-      if (Array.isArray(data.models)) {
-        const supported = data.models
-          .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
-          .map(m => m.name);
-        return { ok: true, apiVersion: ep.api, models: supported };
+async function summarizeText(apiKey, meetingKey, fullLogs) {
+  const modelNames = await listModels(apiKey);
+  const model = pickModel(modelNames);
+  console.log("🧠 Using model:", model);
+
+  // プロンプト（必要ならここを改善していく）
+  const joined = fullLogs
+    .map(x => `- ${x.text}`)
+    .join("\n")
+    .slice(0, 140000); // 念のため上限制御（雑）
+
+  const prompt = `
+以下はオンライン会議の発言ログです。
+あなたは議事録担当です。重要事項・決定事項・TODOを日本語で箇条書きで要約してください。
+雑談は省き、技術/決定/依頼を優先してください。
+不明点は「不明」として書き、推測しないでください。
+
+【会議キー】${meetingKey}
+
+【発言ログ】
+${joined}
+`;
+
+  const url = `https://generativelanguage.googleapis.com/v1/${model}:generateContent?key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+    })
+  });
+
+  const data = await res.json();
+  console.log("📦 Gemini response:", data);
+
+  const text =
+    data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") ||
+    data.candidates?.[0]?.content?.parts?.[0]?.text ||
+    "";
+
+  return { text, modelUsed: model };
+}
+
+// ---- download ----
+async function blobToDataUrl(blob) {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  const base64 = btoa(binary);
+  return `data:text/plain;charset=utf-8;base64,${base64}`;
+}
+
+async function downloadText(filename, text, overrideSettings = null) {
+  const baseSettings = await getSaveSettings();
+  const { saveFolder, saveAs, subdir } = overrideSettings
+    ? {
+        saveFolder: overrideSettings.saveFolder,
+        saveAs: overrideSettings.saveAs,
+        subdir: overrideSettings.subdir
       }
-    } catch {}
-  }
-  return { ok: false, error: "❌ ListModelsで利用可能モデルが取得できませんでした" };
+    : baseSettings;
+  const baseDir = normalizeSubdir(saveFolder);
+  const extraDir = normalizeSubdir(subdir);
+  const fullDir = [baseDir, extraDir].filter(Boolean).join("/");
+  const finalName = fullDir ? `${fullDir}/${filename}` : filename;
+
+  return new Promise((resolve, reject) => {
+    (async () => {
+      const dataUrl = await blobToDataUrl(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      chrome.downloads.download(
+        {
+          url: dataUrl,
+          filename: finalName,
+          saveAs,
+          conflictAction: "uniquify"
+        },
+        (downloadId) => {
+          const err = chrome.runtime.lastError;
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(downloadId);
+        }
+      );
+    })().catch(reject);
+  });
 }
 
-function extractText(data) {
-  const parts = data?.candidates?.[0]?.content?.parts;
-  if (Array.isArray(parts)) {
-    const t = parts.map(p => p?.text || "").join("").trim();
-    if (t) return t;
-  }
-  return "";
-}
-
-function preprocessLogs(rawLogs) {
-  return rawLogs
-    .map(line => line.replace(/\s+/g, " ").trim())
-    .map(line => line.replace(/^(あなた|自分|me)\s*/i, "あなた: "))
-    .filter(line => line.length >= 2)
-    .filter(line => !["うん", "はい", "えー", "あー", "なるほど", "了解", "OK"].includes(line));
-}
-
-async function summarizeAndSave(meetingKey, reason) {
-  const { geminiApiKey } = await chrome.storage.local.get(["geminiApiKey"]);
-  if (!geminiApiKey) return { ok: false, error: "❌ Gemini APIキーが設定されていません" };
+// ---- finalize meeting ----
+async function finalizeMeeting(meetingKey) {
+  const apiKey = await getApiKey();
+  if (!apiKey) return { ok: false, error: "❌ Gemini APIキーが設定されていません" };
 
   const logs = logsByMeeting[meetingKey] || [];
   if (logs.length === 0) return { ok: false, error: "⚠ 発言ログがありません" };
 
-  // ① 要約用は最後150行（無料運用）
-  const clipped = preprocessLogs(logs).slice(-150);
+  const { text: summary, modelUsed } = await summarizeText(apiKey, meetingKey, logs);
+  if (!summary) return { ok: false, error: "❌ 要約に失敗しました（応答が空です）" };
 
-  const lm = await listModels();
-  if (!lm.ok) return { ok: false, error: lm.error };
-  const modelName = lm.models.find(n => n.includes("flash")) || lm.models[0];
-  const apiVersion = lm.apiVersion;
+  const stamp = fileStamp();
+  const safeKey = safeName(meetingKey);
+  const base = `meet_${safeKey}_${stamp}`;
+  const folderName = base;
 
-  const prompt = `
-あなたは「会議議事録の要約係」です。
-以下の発言ログから、会議終了後に読むための要約を作ってください。
+  const fullText = logs.map(x => `${x.ts} ${x.text}`).join("\n");
 
-ルール:
-- 雑談・相槌は極力省略
-- 技術的な内容 / 決定事項 / 依頼事項 / TODO を最優先
-- 発言者名が曖昧な場合は「あなた」「他参加者」に統合（推測で個人名を作らない）
-- 不明点は「未確定」と書く
-- 出力は必ずMarkdown
+  const summaryFile = `summary.txt`;
+  const fullFile = `full.txt`;
 
-出力フォーマット（厳守）:
-## 概要（3行）
-- ...
-## 決定事項
-- ...
-## 依頼・要望
-- ...
-## TODO
-- [ ] ...（担当: あなた/他参加者, 期限: あれば）
-## 未解決・懸念
-- ...
-
-発言ログ:
-${clipped.join("\n")}
-`;
-
-  const url = `https://generativelanguage.googleapis.com/${apiVersion}/${modelName}:generateContent?key=${geminiApiKey}`;
-
-  let summaryText = "";
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
-      })
-    });
-    const data = await res.json();
-    if (data.error) return { ok: false, error: `❌ Gemini error: ${data.error.message}` };
-    summaryText = extractText(data);
-    if (!summaryText) return { ok: false, error: "❌ 要約テキスト抽出に失敗" };
-  } catch (e) {
-    return { ok: false, error: "❌ Gemini通信エラー" };
-  }
-
-  // ② Googleドキュメントに「要約 + 全文ログ」を保存
-  const fullTranscript = preprocessLogs(logs).join("\n"); // 全文（最大300件）
-  const createdAt = new Date().toISOString();
-  const title = `Meet議事録_${meetingKey}_${createdAt.slice(0,19).replace(/[:T]/g,"-")}`;
-
-  const docBody =
-`# 会議議事録（Meet）
-- meetingKey: ${meetingKey}
-- createdAt: ${createdAt}
-
----
-
-${summaryText}
-
----
-
-## 全文ログ
-${fullTranscript}
-`;
-
-  const docRes = await saveToGoogleDoc(title, docBody);
-
-  const summaryObj = {
-    id: crypto.randomUUID(),
-    meetingKey,
-    reason,
-    createdAt,
-    model: `${apiVersion}/${modelName}`,
-    summary: summaryText,
-    docUrl: docRes?.docUrl || null
+  const overrideSettings = {
+    saveFolder: "MeetSummarizer",
+    saveAs: false,
+    subdir: folderName
   };
 
-  await chrome.storage.local.set({ lastSummary: summaryObj });
-  await pushSummaryToHistory(summaryObj);
+  const summaryDownloadId = await downloadText(
+    summaryFile,
+    summary.trim() + "\n",
+    overrideSettings
+  );
+  const fullDownloadId = await downloadText(
+    fullFile,
+    fullText.trim() + "\n",
+    overrideSettings
+  );
 
-  // 会議終了後はログを削除（軽量化）
+  const item = {
+    id: `${meetingKey}_${stamp}`,
+    meetingKey,
+    createdAt: nowIso(),
+    summary: summary.trim(),
+    fullTextCount: logs.length,
+    files: {
+      summaryFile: `${folderName}/${summaryFile}`,
+      fullFile: `${folderName}/${fullFile}`,
+      summaryDownloadId,
+      fullDownloadId
+    },
+    modelUsed
+  };
+
+  summaries.unshift(item);
+  if (summaries.length > MAX_HISTORY) summaries = summaries.slice(0, MAX_HISTORY);
+
+  // 会議終了後はメモリ解放
   delete logsByMeeting[meetingKey];
-  await chrome.storage.local.set({ logsByMeeting });
 
-  if (!docRes?.ok) {
-    // 要約は成功しているがDocs保存だけ失敗、という形で返す
-    return { ok: true, summary: summaryObj, warning: docRes?.error || "Docs保存に失敗しました" };
-  }
+  scheduleSave();
 
-  return { ok: true, summary: summaryObj };
+  return { ok: true, item };
 }
 
-/* ---------------- Google OAuth + Docs/Drive ---------------- */
-
-function getAuthToken(interactive) {
-  return new Promise((resolve) => {
-    chrome.identity.getAuthToken({ interactive }, (token) => {
-      if (chrome.runtime.lastError || !token) resolve(null);
-      else resolve(token);
-    });
-  });
+async function openPopupAfterSummary() {
+  try {
+    if (!chrome.action?.openPopup) return;
+    const win = await chrome.windows.getLastFocused();
+    await chrome.action.openPopup({ windowId: win?.id });
+  } catch (e) {
+    console.log("⚠ openPopup failed:", e);
+  }
 }
 
-// DriveでGoogleドキュメント作成 → Docs APIで本文挿入
-async function saveToGoogleDoc(title, text) {
-  const token = await getAuthToken(true);
-  if (!token) return { ok: false, error: "❌ Google認可が取れません（optionsの認可テストを確認）" };
+// ---- message handler ----
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      // 発言ログ保存
+      if (msg.type === "LOG") {
+        const { meetingKey, text } = msg;
+        if (!meetingKey || !text) return;
 
-  // 1) Drive API: Googleドキュメント作成
-  let fileId = null;
-  try {
-    const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        name: title,
-        mimeType: "application/vnd.google-apps.document"
-      })
-    });
-    const createData = await createRes.json();
-    fileId = createData.id;
-    if (!fileId) return { ok: false, error: "❌ Driveでドキュメント作成に失敗" };
-  } catch {
-    return { ok: false, error: "❌ Drive API 通信エラー" };
-  }
+        const arr = (logsByMeeting[meetingKey] ||= []);
+        const last = arr.at(-1)?.text;
 
-  // 2) Docs API: 本文挿入（先頭にinsertText）
-  try {
-    const docId = fileId;
-    const updateRes = await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        requests: [
-          {
-            insertText: {
-              location: { index: 1 },
-              text
-            }
+        if (last !== text) {
+          arr.push({ ts: nowIso(), text });
+          if (arr.length > MAX_LOGS_PER_MEETING) {
+            arr.splice(0, arr.length - MAX_LOGS_PER_MEETING);
           }
-        ]
-      })
-    });
-    const updateData = await updateRes.json();
-    if (updateData.error) return { ok: false, error: `❌ Docs更新失敗: ${updateData.error.message}` };
+          console.log("🗣 LOG saved:", meetingKey, text);
+          scheduleSave();
+        }
+        return;
+      }
 
-    return { ok: true, docUrl: `https://docs.google.com/document/d/${docId}/edit` };
-  } catch {
-    return { ok: false, error: "❌ Docs API 通信エラー" };
-  }
-}
+      // APIキー保存
+      if (msg.type === "SET_API_KEY") {
+        await chrome.storage.local.set({ geminiApiKey: msg.key || "" });
+        console.log("🔑 API Key saved");
+        sendResponse({ ok: true });
+        return;
+      }
+
+      // 保存先設定（options側から使う場合）
+      if (msg.type === "SET_SAVE_SETTINGS") {
+        const saveFolder = (msg.saveFolder || "MeetSummarizer").trim();
+        const saveAs = !!msg.saveAs;
+        await chrome.storage.local.set({ saveFolder, saveAs });
+        sendResponse({ ok: true });
+        return;
+      }
+
+      // 履歴取得（options用）
+      if (msg.type === "GET_HISTORY") {
+        sendResponse({ ok: true, summaries });
+        return;
+      }
+
+      // 全クリア
+      if (msg.type === "CLEAR_ALL") {
+        logsByMeeting = {};
+        summaries = [];
+        await chrome.storage.local.set({ logsByMeeting, summaries });
+        sendResponse({ ok: true });
+        return;
+      }
+
+      // 手動要約
+      if (msg.type === "SUMMARIZE_NOW") {
+        const meetingKey = msg.meetingKey;
+        const result = await finalizeMeeting(meetingKey);
+        sendResponse(result);
+        return;
+      }
+
+      // 会議終了検知 → 自動要約
+      if (msg.type === "MEETING_ENDED") {
+        const meetingKey = msg.meetingKey;
+        const result = await finalizeMeeting(meetingKey);
+        if (result.ok) await openPopupAfterSummary();
+        sendResponse(result);
+        return;
+      }
+
+      sendResponse({ ok: false, error: "unknown message" });
+    } catch (e) {
+      console.error("❌ background error:", e);
+      sendResponse({ ok: false, error: `❌ エラー: ${e?.message || e}` });
+    }
+  })();
+
+  return true; // async
+});
