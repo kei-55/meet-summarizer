@@ -1,16 +1,27 @@
 {
   "manifest_version": 3,
   "name": "Meet Summarizer",
-  "version": "0.6",
-  "description": "Google Meetの会話ログを自動収集し、会議終了後にGeminiで要約します（字幕は自動ON）",
-  "permissions": ["storage"],
-  "host_permissions": ["https://generativelanguage.googleapis.com/*"],
+  "version": "0.7",
+  "description": "Google Meetの会話ログを収集し、会議終了後にGeminiで要約→Googleドキュメントに保存します（字幕は自動ON）",
+  "permissions": ["storage", "identity", "identity.email"],
+  "host_permissions": [
+    "https://generativelanguage.googleapis.com/*",
+    "https://www.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "821580332572-5fub20tmk3613ismvlvv4vqomfa1cahv.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/documents"
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html"
   },
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],

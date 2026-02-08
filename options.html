@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Meet Summarizer 設定</title>
+</head>
+<body style="max-width:720px; margin:20px auto; font-family:sans-serif;">
+  <h2>⚙ Meet Summarizer 設定</h2>
+
+  <h3>Gemini APIキー</h3>
+  <p style="opacity:0.8; font-size:13px;">
+    画面共有で見えないように、ポップアップには表示しません。ここでのみ設定します。
+  </p>
+
+  <div style="display:flex; gap:8px; align-items:center;">
+    <input id="apiKey" type="password" placeholder="Gemini API Key" style="flex:1; padding:8px;" />
+    <button id="toggle">表示</button>
+    <button id="save">保存</button>
+  </div>
+
+  <div id="status" style="margin-top:10px; font-size:13px;"></div>
+
+  <hr style="margin:20px 0;" />
+
+  <h3>Googleドキュメント保存</h3>
+  <p style="opacity:0.8; font-size:13px;">
+    会議終了時に「要約 + 全文ログ」をGoogleドキュメントとしてDriveに作成します。初回はGoogleログイン許可が出ます。
+  </p>
+
+  <button id="testAuth">Google認可テスト</button>
+  <div id="authStatus" style="margin-top:10px; font-size:13px;"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

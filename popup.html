@@ -1,30 +1,32 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>Meet 要約</title>
+  <meta charset="UTF-8" />
+  <title>会議終了後 要約</title>
 </head>
-<body style="width:340px;font-family:sans-serif">
+<body style="width:360px;font-family:sans-serif">
   <h3>📝 会議終了後 要約</h3>
 
-  <input id="key" placeholder="Gemini API Key" style="width:100%; box-sizing:border-box;" />
-  <div style="margin-top:6px;">
-    <button id="save">APIキー保存</button>
-    <button id="clear">全ログ消去</button>
+  <div style="display:flex; gap:6px; margin-bottom:8px;">
+    <button id="openSettings">設定を開く</button>
+    <button id="clear">全消去</button>
   </div>
 
-  <hr>
-
   <div style="font-size:12px; opacity:0.8; margin-bottom:6px;">
-    会議中は要約しません。退出/タブ閉じ/会議ID変化で自動要約します（字幕は自動でONにします）。
+    会議中は要約しません。退出/タブ閉じ/会議ID変化で自動要約→Googleドキュメントに保存します。
   </div>
 
   <div style="margin-bottom:6px;">
-    <button id="refresh">最新要約を表示</button>
+    <button id="refresh">最新要約</button>
     <button id="copy">コピー</button>
   </div>
 
-  <pre id="result" style="white-space:pre-wrap; margin-top:8px;"></pre>
+  <pre id="result" style="white-space:pre-wrap; margin-top:8px; max-height:260px; overflow:auto;"></pre>
+
+  <hr />
+
+  <h4 style="margin:6px 0;">📚 履歴</h4>
+  <div id="history" style="max-height:220px; overflow:auto; border:1px solid #ddd; padding:6px;"></div>
 
   <script src="popup.js"></script>
 </body>
