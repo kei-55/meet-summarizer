@@ -120,11 +120,33 @@ function findCaptionRegion() {
   return null;
 }
 
-function sendLog(diff) {
+function parseSpeakerAndText(fullText, diffText) {
+  const lines = fullText.split("\n").map(l => l.trim()).filter(Boolean);
+
+  if (lines.length >= 2) {
+    const speaker = lines[0];
+    const spoken = lines.slice(1).join(" ");
+    const text = (diffText === fullText) ? spoken : diffText;
+    return { speaker, text };
+  }
+
+  const m = (fullText || "").match(/^(.{1,40})[:：]\s*(.+)$/);
+  if (m) {
+    const speaker = m[1].trim();
+    const text = (diffText === fullText) ? m[2].trim() : diffText;
+    return { speaker, text };
+  }
+
+  return { speaker: "", text: diffText };
+}
+
+function sendLog(diff, fullText) {
+  const parsed = parseSpeakerAndText(fullText, diff);
   chrome.runtime.sendMessage({
     type: "LOG",
     meetingKey: getMeetingKey(),
-    text: diff
+    text: parsed.text,
+    speaker: parsed.speaker
   });
 }
 
@@ -144,7 +166,7 @@ function startObserver() {
 
       if (diff) {
         console.log("🗣", diff);
-        sendLog(diff);
+        sendLog(diff, current);
       }
       lastText = current;
     } catch (e) {

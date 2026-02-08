@@ -4,7 +4,7 @@
 // - 要約と全文ログをローカル（Downloads配下）へテキスト保存
 // - 保存先：Downloads配下のサブフォルダ名を設定可能 + saveAs(毎回保存先ダイアログ)
 
-let logsByMeeting = {}; // { meetingKey: [ {ts, text} ] }
+let logsByMeeting = {}; // { meetingKey: [ {ts, text, speaker?} ] }
 let summaries = [];     // history list [{id, meetingKey, createdAt, summary, fullTextCount, files}]
 
 const MAX_LOGS_PER_MEETING = 3000; // メモリ暴走防止
@@ -102,9 +102,13 @@ async function summarizeText(apiKey, meetingKey, fullLogs) {
   const model = pickModel(modelNames);
   console.log("🧠 Using model:", model);
 
+  const participants = Array.from(
+    new Set(fullLogs.map(x => (x.speaker || "").trim()).filter(Boolean))
+  );
+
   // プロンプト（必要ならここを改善していく）
   const joined = fullLogs
-    .map(x => `- ${x.text}`)
+    .map(x => x.speaker ? `- ${x.speaker}: ${x.text}` : `- ${x.text}`)
     .join("\n")
     .slice(0, 140000); // 念のため上限制御（雑）
 
@@ -113,8 +117,12 @@ async function summarizeText(apiKey, meetingKey, fullLogs) {
 あなたは議事録担当です。重要事項・決定事項・TODOを日本語で箇条書きで要約してください。
 雑談は省き、技術/決定/依頼を優先してください。
 不明点は「不明」として書き、推測しないでください。
+参加者名が分かる場合は、要約の先頭に「参加者: ...」として記載してください。
 
 【会議キー】${meetingKey}
+
+【参加者候補】
+${participants.length ? participants.map(p => `- ${p}`).join("\n") : "- （不明）"}
 
 【発言ログ】
 ${joined}
@@ -139,7 +147,7 @@ ${joined}
     data.candidates?.[0]?.content?.parts?.[0]?.text ||
     "";
 
-  return { text, modelUsed: model };
+  return { text, modelUsed: model, participants };
 }
 
 // ---- download ----
@@ -208,7 +216,7 @@ async function finalizeMeeting(meetingKey) {
   const logs = logsByMeeting[meetingKey] || [];
   if (logs.length === 0) return { ok: false, error: "⚠ 発言ログがありません" };
 
-  const { text: summary, modelUsed } = await summarizeText(apiKey, meetingKey, logs);
+  const { text: summary, modelUsed, participants } = await summarizeText(apiKey, meetingKey, logs);
   if (!summary) return { ok: false, error: "❌ 要約に失敗しました（応答が空です）" };
 
   const stamp = fileStamp();
@@ -216,7 +224,10 @@ async function finalizeMeeting(meetingKey) {
   const base = `meet_${safeKey}_${stamp}`;
   const folderName = base;
 
-  const fullText = logs.map(x => `${x.ts} ${x.text}`).join("\n");
+  const fullText = logs.map(x => {
+    const speaker = x.speaker ? `${x.speaker}: ` : "";
+    return `${x.ts} ${speaker}${x.text}`;
+  }).join("\n");
 
   const summaryFile = `summary.txt`;
   const fullFile = `full.txt`;
@@ -252,7 +263,8 @@ async function finalizeMeeting(meetingKey) {
       summaryPath: summaryResult.filename,
       fullPath: fullResult.filename
     },
-    modelUsed
+    modelUsed,
+    participants: participants || []
   };
 
   summaries.unshift(item);
@@ -282,18 +294,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       // 発言ログ保存
       if (msg.type === "LOG") {
-        const { meetingKey, text } = msg;
+        const { meetingKey, text, speaker } = msg;
         if (!meetingKey || !text) return;
 
         const arr = (logsByMeeting[meetingKey] ||= []);
         const last = arr.at(-1)?.text;
 
         if (last !== text) {
-          arr.push({ ts: nowIso(), text });
+          arr.push({ ts: nowIso(), text, speaker: speaker || "" });
           if (arr.length > MAX_LOGS_PER_MEETING) {
             arr.splice(0, arr.length - MAX_LOGS_PER_MEETING);
           }
-          console.log("🗣 LOG saved:", meetingKey, text);
+          console.log("🗣 LOG saved:", meetingKey, speaker || "-", text);
           scheduleSave();
         }
         return;
