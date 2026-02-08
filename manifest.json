@@ -1,12 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Meet AI Summarizer",
-  "version": "0.2",
-  "description": "Google Meetの字幕を収集してAIで要約します",
+  "name": "Meet Summarizer",
+  "version": "0.6",
+  "description": "Google Meetの会話ログを自動収集し、会議終了後にGeminiで要約します（字幕は自動ON）",
   "permissions": ["storage"],
-  "host_permissions": [
-    "https://generativelanguage.googleapis.com/*"
-  ],
+  "host_permissions": ["https://generativelanguage.googleapis.com/*"],
   "background": {
     "service_worker": "background.js"
   },
