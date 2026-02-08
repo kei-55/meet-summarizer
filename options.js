@@ -96,21 +96,25 @@ function renderList() {
     const files = item.files
       ? `${item.files.summaryFile}<br>${item.files.fullFile}`
       : "";
+    const paths = item.files?.summaryPath || item.files?.fullPath
+      ? `${item.files.summaryPath || ""}<br>${item.files.fullPath || ""}`
+      : "";
     const summaryId = item.files?.summaryDownloadId;
     const fullId = item.files?.fullDownloadId;
     const summaryDisabled = summaryId ? "" : "disabled";
     const fullDisabled = fullId ? "" : "disabled";
 
     return `
-      <div style="border:1px solid #ddd;padding:10px;border-radius:8px;margin-bottom:10px">
-        <div><b>${item.createdAt}</b> / meetingKey: <code>${item.meetingKey}</code></div>
-        <div style="font-size:12px;opacity:.8;margin-top:4px">保存ファイル名（Downloads配下）:<br>${files}</div>
-        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-          <button data-action="copy-summary" data-id="${item.id}">要約コピー</button>
+      <div class="card">
+        <div class="card-title"><b>${item.createdAt}</b> / meetingKey: <code>${item.meetingKey}</code></div>
+        <div class="files">保存ファイル名（Downloads配下）:<br>${files}</div>
+        ${paths ? `<div class="files">保存パス:<br>${paths}</div>` : ""}
+        <div class="row" style="margin-top:8px">
+          <button data-action="copy-summary" data-id="${item.id}" class="secondary">要約コピー</button>
           <button data-action="open-summary" data-id="${item.id}" ${summaryDisabled}>要約ファイルを開く</button>
           <button data-action="open-full" data-id="${item.id}" ${fullDisabled}>全文ファイルを開く</button>
         </div>
-        <pre style="white-space:pre-wrap;margin-top:8px">${escapeHtml(item.summary)}</pre>
+        <pre>${escapeHtml(item.summary)}</pre>
       </div>
     `;
   }).join("");
@@ -163,21 +167,108 @@ list.addEventListener("click", async (e) => {
   }
 
   if (action === "open-summary" || action === "open-full") {
+    const fileName = action === "open-summary"
+      ? item.files?.summaryFile
+      : item.files?.fullFile;
     const downloadId = action === "open-summary"
       ? item.files?.summaryDownloadId
       : item.files?.fullDownloadId;
 
-    if (!downloadId) {
-      setHistoryStatus("⚠ この履歴は古いためファイルを開けません");
-      return;
+    const tryOpenById = (id) => new Promise((resolve, reject) => {
+      chrome.downloads.open(id, () => {
+        const err = chrome.runtime.lastError;
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const filePath = action === "open-summary"
+      ? item.files?.summaryPath
+      : item.files?.fullPath;
+
+    const tryOpenByExactPath = () => new Promise((resolve, reject) => {
+      if (!filePath) {
+        reject(new Error("no filename"));
+        return;
+      }
+      chrome.downloads.search({ filename: filePath }, (items) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          reject(err);
+          return;
+        }
+        const sorted = (items || []).slice().sort((a, b) => {
+          const ta = new Date(a.endTime || 0).getTime();
+          const tb = new Date(b.endTime || 0).getTime();
+          return tb - ta;
+        });
+        const hit = sorted[0];
+        if (!hit?.id) {
+          reject(new Error("not found"));
+          return;
+        }
+        chrome.downloads.open(hit.id, () => {
+          const err2 = chrome.runtime.lastError;
+          if (err2) reject(err2);
+          else resolve();
+        });
+      });
+    });
+
+    try {
+      if (downloadId) {
+        await tryOpenById(downloadId);
+        return;
+      }
+    } catch {
+      // fall through
     }
 
-    chrome.downloads.open(downloadId, () => {
-      const err = chrome.runtime.lastError;
-      if (err) {
-        setHistoryStatus("⚠ ファイルを開けませんでした（削除済みの可能性）");
+    try {
+      await tryOpenByExactPath();
+      return;
+    } catch {
+      // fall through
+    }
+
+    const tryOpenByFilename = () => new Promise((resolve, reject) => {
+      if (!fileName) {
+        reject(new Error("no filename"));
+        return;
       }
+      const escaped = escapeRegex(fileName.replace(/\\/g, "/"));
+      const filenameRegex = `(^|.*[\\\\/])${escaped}$`;
+      chrome.downloads.search({ filenameRegex }, (items) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          reject(err);
+          return;
+        }
+        const sorted = (items || []).slice().sort((a, b) => {
+          const ta = new Date(a.endTime || 0).getTime();
+          const tb = new Date(b.endTime || 0).getTime();
+          return tb - ta;
+        });
+        const hit = sorted[0];
+        if (!hit?.id) {
+          reject(new Error("not found"));
+          return;
+        }
+        chrome.downloads.open(hit.id, () => {
+          const err2 = chrome.runtime.lastError;
+          if (err2) reject(err2);
+          else resolve();
+        });
+      });
     });
+
+    try {
+      await tryOpenByFilename();
+    } catch {
+      setHistoryStatus("⚠ ファイルを開けませんでした（移動/削除の可能性）");
+    }
   }
 });
 

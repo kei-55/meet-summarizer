@@ -57,10 +57,9 @@ async function getApiKey() {
   return geminiApiKey || "";
 }
 async function getSaveSettings() {
-  const { saveFolder, saveAs } = await chrome.storage.local.get(["saveFolder", "saveAs"]);
   return {
-    saveFolder: (saveFolder || "MeetSummarizer").trim(),
-    saveAs: !!saveAs
+    saveFolder: "MeetSummarizer",
+    saveAs: false
   };
 }
 function normalizeSubdir(name) {
@@ -186,7 +185,15 @@ async function downloadText(filename, text, overrideSettings = null) {
             reject(err);
             return;
           }
-          resolve(downloadId);
+          chrome.downloads.search({ id: downloadId }, (items) => {
+            const err2 = chrome.runtime.lastError;
+            if (err2) {
+              resolve({ downloadId, filename: finalName });
+              return;
+            }
+            const found = (items || [])[0];
+            resolve({ downloadId, filename: found?.filename || finalName });
+          });
         }
       );
     })().catch(reject);
@@ -220,12 +227,12 @@ async function finalizeMeeting(meetingKey) {
     subdir: folderName
   };
 
-  const summaryDownloadId = await downloadText(
+  const summaryResult = await downloadText(
     summaryFile,
     summary.trim() + "\n",
     overrideSettings
   );
-  const fullDownloadId = await downloadText(
+  const fullResult = await downloadText(
     fullFile,
     fullText.trim() + "\n",
     overrideSettings
@@ -240,8 +247,10 @@ async function finalizeMeeting(meetingKey) {
     files: {
       summaryFile: `${folderName}/${summaryFile}`,
       fullFile: `${folderName}/${fullFile}`,
-      summaryDownloadId,
-      fullDownloadId
+      summaryDownloadId: summaryResult.downloadId,
+      fullDownloadId: fullResult.downloadId,
+      summaryPath: summaryResult.filename,
+      fullPath: fullResult.filename
     },
     modelUsed
   };
