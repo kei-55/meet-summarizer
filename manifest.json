@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Meet AI Summarizer",
-  "version": "0.2",
-  "description": "Google Meetの字幕を収集してAIで要約します",
-  "permissions": ["storage"],
+  "name": "Meet Summarizer",
+  "version": "0.8",
+  "description": "Google Meetの会話ログを収集し、会議終了後にGeminiで要約してテキストファイルとして保存します（字幕は自動ON）",
+  "permissions": ["storage", "downloads"],
   "host_permissions": [
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://meet.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -13,6 +14,7 @@
   "action": {
     "default_popup": "popup.html"
   },
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
