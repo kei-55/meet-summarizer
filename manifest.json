@@ -3,7 +3,7 @@
   "name": "Meet Summarizer",
   "version": "0.8",
   "description": "Google Meetの会話ログを収集し、会議終了後にGeminiで要約してテキストファイルとして保存します（字幕は自動ON）",
-  "permissions": ["storage", "downloads"],
+  "permissions": ["storage", "downloads", "downloads.open"],
   "host_permissions": [
     "https://generativelanguage.googleapis.com/*",
     "https://meet.google.com/*"

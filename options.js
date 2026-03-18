@@ -10,6 +10,17 @@ const historyStatus = document.getElementById("historyStatus");
 let lastItems = [];
 let lastById = {};
 
+function formatDateJa(isoStr) {
+  if (!isoStr) return isoStr;
+  const d = new Date(isoStr);
+  const y = d.getFullYear();
+  const mo = d.getMonth() + 1;
+  const da = d.getDate();
+  const h = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${y}/${mo}/${da} ${h}:${mi}`;
+}
+
 function setStatus(msg) {
   saveStatus.textContent = msg;
   setTimeout(() => (saveStatus.textContent = ""), 3000);
@@ -106,13 +117,14 @@ function renderList() {
 
     return `
       <div class="card">
-        <div class="card-title"><b>${item.createdAt}</b> / meetingKey: <code>${item.meetingKey}</code></div>
+        <div class="card-title"><b>${formatDateJa(item.createdAt)}</b> / meetingKey: <code>${item.meetingKey}</code></div>
         <div class="files">保存ファイル名（Downloads配下）:<br>${files}</div>
         ${paths ? `<div class="files">保存パス:<br>${paths}</div>` : ""}
         <div class="row" style="margin-top:8px">
           <button data-action="copy-summary" data-id="${item.id}" class="secondary">要約コピー</button>
-          <button data-action="open-summary" data-id="${item.id}" ${summaryDisabled}>要約ファイルを開く</button>
-          <button data-action="open-full" data-id="${item.id}" ${fullDisabled}>全文ファイルを開く</button>
+          <button data-action="open-summary" data-id="${item.id}" ${summaryDisabled}>要約を開く</button>
+          <button data-action="open-full" data-id="${item.id}" ${fullDisabled}>全文を開く</button>
+          <button data-action="resummarize" data-id="${item.id}" class="secondary">🔄 再要約</button>
         </div>
         <pre>${escapeHtml(item.summary)}</pre>
       </div>
@@ -125,6 +137,34 @@ function escapeHtml(str) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[s]));
 }
+
+// ---- 再要約：ファイル選択後の処理 ----
+document.getElementById("fullTxtFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  const itemId = e.target.dataset.itemId;
+  e.target.value = "";
+  delete e.target.dataset.itemId;
+
+  if (!file || !itemId) return;
+  const item = lastById[itemId];
+  if (!item) return;
+
+  setHistoryStatus("🔄 再要約中…（しばらくお待ちください）");
+
+  const rawContent = await file.text();
+
+  chrome.runtime.sendMessage(
+    { type: "RESUMMARIZE", rawContent, meetingKey: item.meetingKey },
+    (res) => {
+      if (!res?.ok) {
+        setHistoryStatus("❌ " + (res?.error || "再要約に失敗しました"));
+        return;
+      }
+      setHistoryStatus("✅ 再要約が完了しました（履歴の先頭に追加）");
+      refresh();
+    }
+  );
+});
 
 document.getElementById("refresh").onclick = refresh;
 searchInput.oninput = renderList;
@@ -148,6 +188,13 @@ list.addEventListener("click", async (e) => {
   const id = btn.getAttribute("data-id");
   const item = lastById[id];
   if (!item) return;
+
+  if (action === "resummarize") {
+    const input = document.getElementById("fullTxtFile");
+    input.dataset.itemId = id;
+    input.click();
+    return;
+  }
 
   if (action === "copy-summary") {
     const text = item.summary || "";

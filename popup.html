@@ -17,7 +17,7 @@
     }
     * { box-sizing: border-box; }
     body {
-      width: 360px;
+      width: 380px;
       margin: 0;
       font-family: "Zen Kaku Gothic New", "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif;
       background: radial-gradient(400px 200px at 10% -10%, #0f2a1d 0%, transparent 60%),
@@ -63,9 +63,67 @@
       color: #7fe9c6;
       border-color: #1d3a2d;
     }
-    .hint {
-      margin: 10px 2px 8px;
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ステータスバー */
+    .status-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 10px 2px 6px;
+      padding: 8px 10px;
+      background: #0b1412;
+      border: 1px solid var(--line);
+      border-radius: 10px;
       font-size: 12px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .badge.recording {
+      background: rgba(0, 255, 156, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(0, 255, 156, 0.3);
+    }
+    .badge.idle {
+      background: rgba(127, 211, 182, 0.1);
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .badge.recording .badge-dot {
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .stat {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .stat b {
+      color: var(--ink);
+    }
+
+    .hint {
+      margin: 0 2px 8px;
+      font-size: 11px;
       color: var(--muted);
       line-height: 1.5;
     }
@@ -77,6 +135,18 @@
       padding: 10px;
       box-shadow: var(--shadow);
     }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .panel-header .meta {
+      display: flex;
+      gap: 10px;
+    }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -85,7 +155,7 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 8px;
-      max-height: 300px;
+      max-height: 240px;
       overflow: auto;
       color: #d3ffe9;
     }
@@ -93,29 +163,45 @@
       display: flex;
       gap: 8px;
       align-items: center;
-      justify-content: space-between;
       margin-top: 8px;
+    }
+    .participants {
+      margin-bottom: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .participants span {
+      color: var(--accent-2);
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="header">
-      <h3 class="title">会議終了後 要約</h3>
+      <h3 class="title">🎙 Meet Summarizer</h3>
       <button id="openOptions" class="secondary">設定</button>
     </div>
 
-    <div class="hint">
-      会議終了後の最新要約を表示します。<br>
-      会議中に終了検知が失敗した場合は「今すぐ要約」を押してください。
+    <div class="status-bar">
+      <span id="recordBadge" class="badge idle"><span class="badge-dot"></span>待機中</span>
+      <span id="logCount" class="stat">ログ: <b id="logCountNum">0</b> 件</span>
+      <span id="speakerCount" class="stat" style="display:none">参加者: <b id="speakerCountNum">0</b> 名</span>
     </div>
 
     <div class="actions">
       <button id="summarizeNow" class="primary">今すぐ要約（手動）</button>
+      <button id="refreshStatus" class="secondary">↺ 更新</button>
     </div>
 
     <div class="panel">
-      <pre id="result"></pre>
+      <div class="panel-header">
+        <span id="panelTitle">最新の要約</span>
+        <div class="meta">
+          <span id="panelDate"></span>
+        </div>
+      </div>
+      <div id="participants" class="participants" style="display:none"></div>
+      <pre id="result">まだ要約がありません。</pre>
     </div>
   </div>
 

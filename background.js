@@ -57,9 +57,10 @@ async function getApiKey() {
   return geminiApiKey || "";
 }
 async function getSaveSettings() {
+  const stored = await chrome.storage.local.get(["saveFolder", "saveAs"]);
   return {
-    saveFolder: "MeetSummarizer",
-    saveAs: false
+    saveFolder: stored.saveFolder || "MeetSummarizer",
+    saveAs: !!stored.saveAs
   };
 }
 function normalizeSubdir(name) {
@@ -135,7 +136,7 @@ ${joined}
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+      generationConfig: { temperature: 0.3, maxOutputTokens: 4096 }
     })
   });
 
@@ -208,6 +209,114 @@ async function downloadText(filename, text, overrideSettings = null) {
   });
 }
 
+// ---- full.txt 再解析 ----
+
+// テキスト全体からスピーカー名候補を検出（漢字含む or 英語大文字始まり）
+function detectSpeakerNames(text) {
+  const freq = new Map();
+  for (const word of text.split(/\s+/)) {
+    const clean = word.replace(/[。、！？…「」『』\.\!\?（）():：]/g, "").trim();
+    if (clean.length < 2 || clean.length > 10) continue;
+    // 漢字を含む（日本人名）か英語名（大文字始まり）のみ候補にする
+    if (!/[\u4E00-\u9FAF]/.test(clean) && !/^[A-Z][a-z]/.test(clean)) continue;
+    freq.set(clean, (freq.get(clean) || 0) + 1);
+  }
+  const stopWords = new Set([
+    "フェーズ", "パターン", "システム", "ありがとう", "すみません", "よろしく",
+    "お願い", "わかり", "ください", "比較表", "内容", "最新版", "担当", "対応",
+    "確認", "設定", "作業", "資料", "会議", "参加者", "決定", "検討", "説明",
+    "対象", "全体", "関係", "方針", "課題",
+  ]);
+  return Array.from(freq.entries())
+    .filter(([w, count]) => count >= 2 && !stopWords.has(w))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15)
+    .map(([w]) => w);
+}
+
+// 検出されたスピーカー名でテキストを発言単位に分割
+function splitBySpeakers(text, speakers) {
+  if (!speakers.length) return [{ speaker: "", text: text.trim() }];
+  const escaped = speakers.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(^|\\s)(${escaped.join("|")})\\s`, "g");
+  const parts = [];
+  let lastIndex = 0;
+  let lastSpeaker = "";
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const matchStart = match.index + match[1].length;
+    const textBefore = text.slice(lastIndex, matchStart).trim();
+    if (textBefore) parts.push({ speaker: lastSpeaker, text: textBefore });
+    lastSpeaker = match[2];
+    lastIndex = matchStart + match[2].length + 1;
+  }
+  const remaining = text.slice(lastIndex).trim();
+  if (remaining) parts.push({ speaker: lastSpeaker, text: remaining });
+  return parts.length ? parts : [{ speaker: "", text: text.trim() }];
+}
+
+// full.txt の内容をログ配列に変換（旧・新フォーマット両対応）
+function parseFullTextContent(rawContent) {
+  const lines = rawContent.trim().split("\n").filter(Boolean);
+  const isOldFormat = lines.some(l => /^\d{4}-\d{2}-\d{2}T/.test(l));
+  const isNewFormat = lines.some(l => /^\[\d{2}:\d{2}:\d{2}\]/.test(l));
+
+  let speakers = [];
+  if (isOldFormat && !isNewFormat) {
+    // 全テキストを結合してスピーカー名を検出
+    const allText = lines
+      .map(l => { const m = l.match(/^\S+T\S+Z\s+(.*)/); return m ? m[1] : l; })
+      .join(" ");
+    speakers = detectSpeakerNames(allText);
+    console.log("🔍 Detected speakers:", speakers);
+  }
+
+  const logs = [];
+  for (const line of lines) {
+    // 新フォーマット: [HH:MM:SS] Speaker: text
+    const newMatch = line.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(?:(.+?):\s)?(.+)$/);
+    if (newMatch) {
+      logs.push({
+        ts: new Date().toISOString(),
+        speaker: (newMatch[2] || "").trim(),
+        text: newMatch[3].trim()
+      });
+      continue;
+    }
+    // 旧フォーマット（コロンあり）: ISO_TS Speaker: text
+    const oldColon = line.match(/^(\S+T\S+Z)\s+(.{1,20}):\s+(.+)$/);
+    if (oldColon) {
+      logs.push({ ts: oldColon[1], speaker: oldColon[2].trim(), text: oldColon[3].trim() });
+      continue;
+    }
+    // 旧フォーマット（コロンなし）: ISO_TS text（スピーカー名が内包）
+    const oldPlain = line.match(/^(\S+T\S+Z)\s+(.+)$/);
+    if (oldPlain) {
+      const ts = oldPlain[1];
+      const rest = oldPlain[2];
+      const utterances = splitBySpeakers(rest, speakers);
+      for (const u of utterances) {
+        if (u.text) logs.push({ ts, speaker: u.speaker, text: u.text });
+      }
+      continue;
+    }
+    // タイムスタンプなし（プレーンテキスト）
+    if (line.trim()) {
+      logs.push({ ts: new Date().toISOString(), speaker: "", text: line.trim() });
+    }
+  }
+  return logs;
+}
+
+function formatLogsAsFullText(logs) {
+  return logs.map(x => {
+    const d = new Date(x.ts);
+    const timeStr = `[${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}]`;
+    const speaker = x.speaker ? `${x.speaker}: ` : "";
+    return `${timeStr} ${speaker}${x.text}`;
+  }).join("\n");
+}
+
 // ---- finalize meeting ----
 async function finalizeMeeting(meetingKey) {
   const apiKey = await getApiKey();
@@ -224,10 +333,7 @@ async function finalizeMeeting(meetingKey) {
   const base = `meet_${safeKey}_${stamp}`;
   const folderName = base;
 
-  const fullText = logs.map(x => {
-    const speaker = x.speaker ? `${x.speaker}: ` : "";
-    return `${x.ts} ${speaker}${x.text}`;
-  }).join("\n");
+  const fullText = formatLogsAsFullText(logs);
 
   const summaryFile = `summary.txt`;
   const fullFile = `full.txt`;
@@ -334,6 +440,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
+      // ログ状態取得（popup用）
+      if (msg.type === "GET_LOG_STATUS") {
+        const { meetingKey } = msg;
+        const logs = logsByMeeting[meetingKey] || [];
+        const speakers = Array.from(
+          new Set(logs.map(x => (x.speaker || "").trim()).filter(Boolean))
+        );
+        sendResponse({ ok: true, count: logs.length, speakers });
+        return;
+      }
+
       // 全クリア
       if (msg.type === "CLEAR_ALL") {
         logsByMeeting = {};
@@ -357,6 +474,72 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const result = await finalizeMeeting(meetingKey);
         if (result.ok) await openPopupAfterSummary();
         sendResponse(result);
+        return;
+      }
+
+      // full.txtから再要約
+      if (msg.type === "RESUMMARIZE") {
+        console.log("🔄 RESUMMARIZE received, meetingKey:", msg.meetingKey, "contentLength:", msg.rawContent?.length);
+        const { rawContent, meetingKey } = msg;
+        const apiKey = await getApiKey();
+        if (!apiKey) {
+          sendResponse({ ok: false, error: "❌ Gemini APIキーが設定されていません" });
+          return;
+        }
+        if (!rawContent) {
+          sendResponse({ ok: false, error: "⚠ ファイル内容が空です（ファイルの再選択をお試しください）" });
+          return;
+        }
+        const logs = parseFullTextContent(rawContent);
+        console.log("📝 Parsed logs count:", logs.length);
+        if (!logs.length) {
+          sendResponse({ ok: false, error: "⚠ ログを解析できませんでした（full.txtの形式を確認してください）" });
+          return;
+        }
+        const { text: summary, modelUsed, participants } = await summarizeText(apiKey, meetingKey, logs);
+        if (!summary) {
+          sendResponse({ ok: false, error: "❌ 要約に失敗しました（応答が空です）" });
+          return;
+        }
+
+        const stamp = fileStamp();
+        const safeKey = safeName(meetingKey);
+        const base = `meet_${safeKey}_${stamp}_re`;
+
+        // 整形済み full.txt（新フォーマット）
+        const reformattedFull = formatLogsAsFullText(logs);
+
+        const baseSettings = await getSaveSettings();
+        const overrideSettings = {
+          saveFolder: baseSettings.saveFolder,
+          saveAs: baseSettings.saveAs,
+          subdir: base
+        };
+        const summaryResult = await downloadText("summary.txt", summary.trim() + "\n", overrideSettings);
+        const fullResult = await downloadText("full.txt", reformattedFull.trim() + "\n", overrideSettings);
+
+        const item = {
+          id: `${meetingKey}_${stamp}_re`,
+          meetingKey,
+          createdAt: nowIso(),
+          summary: summary.trim(),
+          fullTextCount: logs.length,
+          files: {
+            summaryFile: `${base}/summary.txt`,
+            fullFile: `${base}/full.txt`,
+            summaryDownloadId: summaryResult.downloadId,
+            fullDownloadId: fullResult.downloadId,
+            summaryPath: summaryResult.filename,
+            fullPath: fullResult.filename
+          },
+          modelUsed,
+          participants: participants || []
+        };
+
+        summaries.unshift(item);
+        if (summaries.length > MAX_HISTORY) summaries = summaries.slice(0, MAX_HISTORY);
+        scheduleSave();
+        sendResponse({ ok: true, item });
         return;
       }
 
