@@ -164,6 +164,11 @@ async function blobToDataUrl(blob) {
   return `data:text/plain;charset=utf-8;base64,${base64}`;
 }
 
+function toCrlf(text) {
+  // Windowsのメモ帳など、LF単独だと改行が反映されず全文が1行に見えるアプリ対策
+  return String(text).replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+}
+
 async function downloadText(filename, text, overrideSettings = null) {
   const baseSettings = await getSaveSettings();
   const { saveFolder, saveAs, subdir } = overrideSettings
@@ -180,7 +185,7 @@ async function downloadText(filename, text, overrideSettings = null) {
 
   return new Promise((resolve, reject) => {
     (async () => {
-      const dataUrl = await blobToDataUrl(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      const dataUrl = await blobToDataUrl(new Blob([toCrlf(text)], { type: "text/plain;charset=utf-8" }));
       chrome.downloads.download(
         {
           url: dataUrl,
