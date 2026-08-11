@@ -10,6 +10,7 @@ function getMeetingKey() {
 let lastText = "";
 let observer = null;
 let ended = false;
+let joined = false; // 一度でも通話中状態を確認できたか（ロビー画面での誤検知防止）
 
 // -----------------------------
 // 1) 字幕ONを自動化（ベータ）
@@ -186,15 +187,25 @@ function detectEnded() {
     '[aria-label*="通話を終了"],[aria-label*="退出"],[data-tooltip-id*="hangup"],[aria-label*="Leave call"],[aria-label*="End call"]'
   );
 
-  if (!inCall && !ended) {
-    ended = true;
-    const meetingKey = getMeetingKey();
-    console.log("📞 meeting ended detected:", meetingKey);
-
-    chrome.runtime.sendMessage({ type: "MEETING_ENDED", meetingKey }, (res) => {
-      console.log("✅ finalize result:", res);
-    });
+  if (inCall) {
+    // 入室前（ロビー画面）にはこのボタンが無いので、
+    // 一度でも通話中を確認できたときだけ「参加済み」とする
+    joined = true;
+    return;
   }
+
+  // 参加したことが無いのに「ボタンが無い＝終了」と判定すると、
+  // ロビー画面で即座に ended=true が確定してしまい、
+  // 実際の会議終了が二度と検知できなくなるため参加済みの場合のみ判定する
+  if (!joined || ended) return;
+
+  ended = true;
+  const meetingKey = getMeetingKey();
+  console.log("📞 meeting ended detected:", meetingKey);
+
+  chrome.runtime.sendMessage({ type: "MEETING_ENDED", meetingKey }, (res) => {
+    console.log("✅ finalize result:", res);
+  });
 }
 
 function startEndWatcher() {

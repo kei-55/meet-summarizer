@@ -57,9 +57,10 @@ async function getApiKey() {
   return geminiApiKey || "";
 }
 async function getSaveSettings() {
+  const { saveFolder, saveAs } = await chrome.storage.local.get(["saveFolder", "saveAs"]);
   return {
-    saveFolder: "MeetSummarizer",
-    saveAs: false
+    saveFolder: (saveFolder || "").trim() || "MeetSummarizer",
+    saveAs: !!saveAs
   };
 }
 function normalizeSubdir(name) {
@@ -232,9 +233,10 @@ async function finalizeMeeting(meetingKey) {
   const summaryFile = `summary.txt`;
   const fullFile = `full.txt`;
 
+  const { saveFolder, saveAs } = await getSaveSettings();
   const overrideSettings = {
-    saveFolder: "MeetSummarizer",
-    saveAs: false,
+    saveFolder,
+    saveAs,
     subdir: folderName
   };
 
